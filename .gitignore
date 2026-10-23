@@ -1,0 +1,17 @@
+# Local credentials
+.env
+.env.*
+!.env.example
+key.txt
+
+# Python environments and caches
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Generated and reference audio
+outputs/
+*.wav
+*.mp3
+.openrouter-tts-*/
