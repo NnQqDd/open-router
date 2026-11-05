@@ -15,3 +15,7 @@ outputs/
 *.wav
 *.mp3
 .openrouter-tts-*/
+*temp/
+tests/
+*.extra.*
+*.extra

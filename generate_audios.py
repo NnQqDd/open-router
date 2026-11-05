@@ -12,7 +12,7 @@ import tempfile
 
 from tqdm import tqdm
 
-from utilities import AudioGenerationError, generate_audio, redact
+from modules.utilities import AudioGenerationError, generate_audio, redact
 
 DEFAULT_MODEL = "fish-audio/s2.1-pro-free:free"
 

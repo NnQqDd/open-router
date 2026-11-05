@@ -6,7 +6,7 @@ import math
 from pathlib import Path
 import sys
 
-from utilities import TextGenerationError, generate_text, redact
+from modules.utilities import TextGenerationError, generate_text, redact
 
 
 class QueryError(Exception):

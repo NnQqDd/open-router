@@ -13,7 +13,7 @@ import time
 
 from tqdm import tqdm
 
-from utilities import TextGenerationError, generate_text, redact
+from modules.utilities import TextGenerationError, generate_text, redact
 
 
 class GenerateError(Exception):

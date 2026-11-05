@@ -5,7 +5,7 @@ import argparse
 from pathlib import Path
 import sys
 
-from utilities import AudioGenerationError, generate_audio, redact
+from modules.utilities import AudioGenerationError, generate_audio, redact
 
 DEFAULT_MODEL = "fish-audio/s2.1-pro-free:free"
 

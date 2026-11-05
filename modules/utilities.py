@@ -55,10 +55,10 @@ def _error_detail(data):
 
 
 def _load_api_key(error_type):
-    load_dotenv(Path(__file__).with_name(".env"), encoding="utf-8-sig")
+    load_dotenv(Path(__file__).resolve().parent.parent / ".env", encoding="utf-8-sig")
     key = os.getenv("OPEN_ROUTER_KEY", "").strip()
     if not key:
-        raise error_type("Set OPEN_ROUTER_KEY=your_key in .env beside utilities.py.")
+        raise error_type("Set OPEN_ROUTER_KEY=your_key in .env in the repository root.")
     if any(char.isspace() for char in key):
         raise error_type("OPEN_ROUTER_KEY must not contain whitespace.")
     return key
@@ -102,7 +102,7 @@ def generate_text(model_id, prompt):
     ``messages`` and optional OpenRouter parameters such as ``response_format``.
     A dictionary may also set ``timeout`` in seconds (default: 180); this is
     used locally and is not sent to OpenRouter. The dictionary is not modified.
-    Credentials come from OPEN_ROUTER_KEY or .env beside this module.
+    Credentials come from OPEN_ROUTER_KEY or .env in the repository root.
     """
     if not isinstance(model_id, str) or not model_id.strip():
         raise TextGenerationError("model_id must be a non-empty string.")
@@ -260,7 +260,7 @@ def generate_audio(model_id, voice_id, text, speed, save_path, *, timeout=180,
     ``speed`` must be finite and positive; support and bounds depend on the
     provider. ``response_format`` selects MP3 (default) or raw 24 kHz, 16-bit
     mono PCM. WAV output and PCM conversion require FFmpeg on PATH.
-    Credentials come from OPEN_ROUTER_KEY or .env beside this module.
+    Credentials come from OPEN_ROUTER_KEY or .env in the repository root.
     Existing files are preserved unless ``overwrite=True``. Nothing is printed.
     Failures raise ``AudioGenerationError``.
     """
