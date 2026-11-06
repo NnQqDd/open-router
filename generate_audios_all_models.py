@@ -75,13 +75,15 @@ class Job(NamedTuple):
     text: str
     voice: str
     response_format: str
+    language: str = ""
+    index: int = 0
 
     @property
     def key(self):
         return self.model, self.text, self.voice
 
 
-def _read_texts(metadata_path, count):
+def _read_texts(metadata_path, count, *, include_remaining=False):
     """Keep CSV order and whitespace; select VI from the top and EN from the bottom."""
     values = {"vi": [], "en": []}
     try:
@@ -105,10 +107,11 @@ def _read_texts(metadata_path, count):
             raise BatchGenerationError(
                 f"The CSV has only {len(texts)} non-empty '{lang}' texts; {count} are required."
             )
-    return {"vi": values["vi"][:count], "en": values["en"][-count:][::-1]}
+    ordered = {"vi": values["vi"], "en": values["en"][::-1]}
+    return ordered if include_remaining else {lang: texts[:count] for lang, texts in ordered.items()}
 
 
-def _build_jobs(texts):
+def _build_jobs(texts, count=None, rejected=()):
     for preset in MODEL_PRESETS:
         for profile in preset.voices:
             for lang in ("vi", "en"):
@@ -116,8 +119,78 @@ def _build_jobs(texts):
                 if preset.model.startswith("microsoft/") and lang == "en":
                     # MAI's locale controls the spoken language, even for the same speaker.
                     voice = profile.replace("vi-VN-", "en-US-", 1)
-                for text in texts[lang]:
-                    yield Job(preset.model, text, voice, preset.response_format)
+                selected = 0
+                target = len(texts[lang]) if count is None else count
+                for index, text in enumerate(texts[lang]):
+                    job = Job(preset.model, text, voice, preset.response_format, lang, index)
+                    if job.key in rejected:
+                        continue
+                    yield job
+                    selected += 1
+                    if selected == target:
+                        break
+                if selected < target:
+                    raise BatchGenerationError(
+                        f"Not enough remaining '{lang}' texts for {preset.model} / {voice}; "
+                        f"need {target}, found {selected} after excluding rejected texts."
+                    )
+
+
+def _is_moderation_error(exc):
+    if exc.status_code not in (400, 403, 422):
+        return False
+    message = str(exc).upper()
+    return any(marker in message for marker in (
+        "PROHIBITED_CONTENT", "CONTENT MODERATION", "FINISH REASON: SAFETY",
+    ))
+
+
+def _read_recording_metadata(path):
+    identifier = UUID(path.stem)
+    if identifier.version != 4 or str(identifier) != path.stem:
+        raise ValueError("Expected a UUIDv4 filename")
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if (not isinstance(data, dict) or set(data) != {"model", "text", "voice"} or
+            not all(isinstance(value, str) and value.strip() for value in data.values())):
+        raise ValueError("Invalid recording metadata")
+    return data
+
+
+def _load_rejections(directory):
+    if directory.exists() and not directory.is_dir():
+        raise BatchGenerationError(f"Expected a directory for rejected requests: '{directory}'.")
+    rejected = set()
+    for path in directory.glob("*.json"):
+        try:
+            data = _read_recording_metadata(path)
+        except (OSError, UnicodeError, ValueError) as exc:
+            raise BatchGenerationError(f"Cannot read rejected request '{path}': {exc}") from None
+        rejected.add((data["model"], data["text"], data["voice"]))
+    return rejected
+
+
+def _archive_rejection(identifier, audio_dir, metadata_dir):
+    directory = metadata_dir.parent / "rejected"
+    directory.mkdir(exist_ok=True)
+    (metadata_dir / f"{identifier}.json").replace(directory / f"{identifier}.json")
+    audio_path = audio_dir / f"{identifier}.wav"
+    if os.path.lexists(audio_path):
+        audio_path.replace(directory / audio_path.name)
+
+
+def _replacement_job(job, texts, next_indices, rejected):
+    part = job.model, job.voice, job.language
+    index = next_indices[part]
+    while index < len(texts[job.language]):
+        replacement = job._replace(text=texts[job.language][index], index=index)
+        index += 1
+        next_indices[part] = index
+        if replacement.key not in rejected:
+            return replacement
+    raise BatchGenerationError(
+        f"No more '{job.language}' texts for {job.model} / {job.voice}; "
+        "the requested count cannot be filled after moderation rejections."
+    )
 
 
 def _valid_wav(path):
@@ -145,13 +218,7 @@ def _scan_existing(audio_dir, metadata_dir):
     ignored = 0
     for path in sorted(metadata_dir.glob("*.json")):
         try:
-            identifier = UUID(path.stem)
-            if identifier.version != 4 or str(identifier) != path.stem:
-                raise ValueError("Expected a UUIDv4 filename")
-            data = json.loads(path.read_text(encoding="utf-8"))
-            if (not isinstance(data, dict) or set(data) != {"model", "text", "voice"} or
-                    not all(isinstance(value, str) and value.strip() for value in data.values())):
-                raise ValueError("Invalid recording metadata")
+            data = _read_recording_metadata(path)
         except (OSError, UnicodeError, ValueError):
             ignored += 1
             continue
@@ -191,11 +258,16 @@ def _generate_recording(job, identifier, audio_dir, metadata_dir):
                 break
         _write_metadata(metadata_dir / f"{identifier}.json", job)
     audio_path = audio_dir / f"{identifier}.wav"
-    generate_audio(
-        job.model, job.voice, job.text, 1.0, audio_path,
-        timeout=180, response_format=job.response_format,
-        overwrite=os.path.lexists(audio_path),
-    )
+    try:
+        generate_audio(
+            job.model, job.voice, job.text, 1.0, audio_path,
+            timeout=180, response_format=job.response_format,
+            overwrite=os.path.lexists(audio_path),
+        )
+    except AudioGenerationError as exc:
+        if _is_moderation_error(exc):
+            _archive_rejection(identifier, audio_dir, metadata_dir)
+        raise
     if not _valid_wav(audio_path):
         raise BatchGenerationError(f"Generation did not produce a complete WAV: '{audio_path}'.")
 
@@ -221,20 +293,29 @@ def main(argv=None):
     try:
         if args.part_num_audios < 1:
             raise BatchGenerationError("--part-num-audios must be at least 1.")
-        texts = _read_texts(args.metadata_path.expanduser().absolute(), args.part_num_audios)
-        jobs = list(_build_jobs(texts))
+        texts = _read_texts(
+            args.metadata_path.expanduser().absolute(), args.part_num_audios, include_remaining=True,
+        )
         save_path = args.save_path.expanduser().absolute()
         audio_dir = save_path / "audios"
         metadata_dir = save_path / "metadatas"
+        rejected_dir = save_path / "rejected"
         for directory in (audio_dir, metadata_dir):
             directory.mkdir(parents=True, exist_ok=True)
-        if not args.resume and any(any(directory.iterdir()) for directory in (audio_dir, metadata_dir)):
+        if not args.resume and any(
+            directory.is_dir() and any(directory.iterdir())
+            for directory in (audio_dir, metadata_dir, rejected_dir)
+        ):
             raise BatchGenerationError(
                 "Output already contains recordings; use --resume or choose a different --save-path."
             )
-
+        rejected = _load_rejections(rejected_dir)
+        jobs = list(_build_jobs(texts, args.part_num_audios, rejected))
+        next_indices = {
+            (job.model, job.voice, job.language): job.index + 1 for job in jobs
+        }
         completed, incomplete = _scan_existing(audio_dir, metadata_dir)
-        pending = []
+        pending = deque()
         skipped = 0
         for job in jobs:
             if completed[job.key]:
@@ -256,19 +337,54 @@ def main(argv=None):
             flush=True,
         )
         saved = 0
+        moderated = 0
         progress_context = (
             tqdm(total=len(jobs), initial=skipped, desc="Generating audio", unit="file",
                  dynamic_ncols=True, file=sys.stderr)
             if tqdm is not None else nullcontext()
         )
         with progress_context as progress:
-            for job, identifier in pending:
+            while pending:
+                job, identifier = pending.popleft()
                 if progress is not None:
                     progress.set_postfix_str(f"{job.model} / {job.voice}", refresh=False)
-                try:
-                    _generate_recording(job, identifier, audio_dir, metadata_dir)
-                except AudioGenerationError as exc:
-                    raise BatchGenerationError(f"{job.model} / {job.voice}: {exc}") from None
+                if job.key not in rejected:
+                    try:
+                        _generate_recording(job, identifier, audio_dir, metadata_dir)
+                    except AudioGenerationError as exc:
+                        if not _is_moderation_error(exc):
+                            raise BatchGenerationError(f"{job.model} / {job.voice}: {exc}") from None
+                        rejected.add(job.key)
+                        moderated += 1
+                        message = (
+                            f"Skipping moderated {job.language} text at non-empty entry {job.index + 1} "
+                            f"for {job.model} / {job.voice}; selecting the next CSV text."
+                        )
+                        if tqdm is None:
+                            print(message, file=sys.stderr, flush=True)
+                        else:
+                            tqdm.write(message, file=sys.stderr)
+                elif identifier is not None:
+                    _archive_rejection(identifier, audio_dir, metadata_dir)
+
+                if job.key in rejected:
+                    replacement = _replacement_job(job, texts, next_indices, rejected)
+                    if completed[replacement.key]:
+                        completed[replacement.key] -= 1
+                        skipped += 1
+                        if progress is not None:
+                            progress.update(1)
+                    else:
+                        existing = incomplete[replacement.key]
+                        # Finish the earlier CSV entries for this language before its replacement.
+                        position = 0
+                        for offset, (other, _) in enumerate(pending, 1):
+                            if (other.model, other.voice, other.language) == (
+                                job.model, job.voice, job.language,
+                            ):
+                                position = offset
+                        pending.insert(position, (replacement, existing.popleft() if existing else None))
+                    continue
                 saved += 1
                 if progress is not None:
                     progress.update(1)
@@ -277,7 +393,10 @@ def main(argv=None):
                         f"Generating audio: {skipped + saved}/{len(jobs)} "
                         f"{job.model} / {job.voice}", file=sys.stderr, flush=True,
                     )
-        print(f"Saved {saved} recordings to {save_path}; skipped {skipped} complete pairs.")
+        print(
+            f"Saved {saved} recordings to {save_path}; skipped {skipped} complete pairs; "
+            f"{moderated} requests rejected by moderation."
+        )
         return 0
     except (BatchGenerationError, OSError) as exc:
         print(f"Error: {redact(str(exc))}\nRerun with --resume to continue.", file=sys.stderr)

@@ -32,6 +32,10 @@ class TextGenerationError(Exception):
 class AudioGenerationError(Exception):
     """An audio generation or saving failure with credentials removed."""
 
+    def __init__(self, message, *, status_code=None):
+        super().__init__(message)
+        self.status_code = status_code
+
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
@@ -193,7 +197,8 @@ def _request_speech(model_id, voice_id, text, speed, key, timeout, response_form
             audio = response.read()
     except urllib.error.HTTPError as exc:
         raise AudioGenerationError(
-            _http_error_message(exc, key, "Check the model, voice, and provider.")
+            _http_error_message(exc, key, "Check the model, voice, and provider."),
+            status_code=exc.code,
         ) from None
     except (urllib.error.URLError, TimeoutError, OSError):
         raise AudioGenerationError("Could not reach OpenRouter or the request timed out.") from None

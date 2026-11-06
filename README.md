@@ -75,10 +75,10 @@ JSON inputs require a non-empty `normalized_text` string. Each input becomes
 `<stem>.wav`. Scans only the input directory; index bounds select numeric stems.
 Rerun the same command to resume.
 
-## `generate_audios_all_models.extra.py` — generate both languages for every voice
+## `generate_audios_all_models.py` — generate both languages for every voice
 
 ```bash
-python generate_audios_all_models.extra.py --part-num-audios 20 --metadata-path .temp/PhoMT_test.csv --save-path outputs/all_models --resume
+python generate_audios_all_models.py --part-num-audios 20 --metadata-path .temp/PhoMT_test.csv --save-path outputs/all_models --resume
 ```
 
 | Argument | Meaning |
@@ -97,6 +97,8 @@ Each WAV/JSON pair shares a UUIDv4 filename. JSON contains only `model`, `text`,
 and the actual provider `voice` ID. Resume matches these values and validates
 the WAV; duplicate text occurrences count separately. Keep the CSV and selected
 count the same when resuming. Metadata is saved before synthesis, so interrupted
-recordings retain their UUID. API errors stop the run; rerun with `--resume`.
+recordings retain their UUID. Moderation rejections are remembered in `rejected/`;
+the script takes the next text in the same language to fill that voice's quota.
+Resume excludes those rejected texts. Other API errors stop the run; rerun with `--resume`.
 Without `--resume`, the recording directories must be empty.
 `tqdm` is optional for this script; when unavailable, it prints plain progress.
