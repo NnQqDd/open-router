@@ -93,8 +93,9 @@ Uses the ten-model comparison set with 84 voice profiles: `N=20` produces
 entries and last N non-empty English entries, in reverse order for English.
 Microsoft Grant/Harper use `vi-VN` IDs for Vietnamese and `en-US` IDs for English.
 
-Each WAV/JSON pair shares a UUIDv4 filename. JSON contains only `model`, `text`,
-and the actual provider `voice` ID. Resume matches these values and validates
+Each WAV/JSON pair shares a UUIDv4 filename. JSON contains `model`, `text`,
+the actual provider `voice` ID, and `language` (`vi` or `en`; `null` if unknown).
+Resume also accepts older metadata without `language`, matches model/text/voice, and validates
 the WAV; duplicate text occurrences count separately. Keep the CSV and selected
 count the same when resuming. Metadata is saved before synthesis, so interrupted
 recordings retain their UUID. Moderation rejections are remembered in `rejected/`;

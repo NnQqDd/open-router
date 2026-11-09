@@ -150,8 +150,10 @@ def _read_recording_metadata(path):
     if identifier.version != 4 or str(identifier) != path.stem:
         raise ValueError("Expected a UUIDv4 filename")
     data = json.loads(path.read_text(encoding="utf-8"))
-    if (not isinstance(data, dict) or set(data) != {"model", "text", "voice"} or
-            not all(isinstance(value, str) and value.strip() for value in data.values())):
+    required = {"model", "text", "voice"}
+    if (not isinstance(data, dict) or not required <= set(data) <= required | {"language"} or
+            not all(isinstance(data[key], str) and data[key].strip() for key in required) or
+            data.get("language") not in (None, "en", "vi")):
         raise ValueError("Invalid recording metadata")
     return data
 
@@ -239,14 +241,20 @@ def _scan_existing(audio_dir, metadata_dir):
     return completed, incomplete
 
 
-def _write_metadata(path, job):
-    data = {"model": job.model, "text": job.text, "voice": job.voice}
+def _write_metadata(path, job, *, overwrite=False):
+    data = {
+        "model": job.model, "text": job.text, "voice": job.voice,
+        "language": job.language if job.language in ("en", "vi") else None,
+    }
     # Publish complete JSON before making the speech request. A failed request leaves
     # enough information to reuse the UUID on the next --resume run.
     with tempfile.TemporaryDirectory(prefix=".metadata-", dir=path.parent) as tmp:
         temporary = Path(tmp) / "recording.json"
         temporary.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-        os.link(temporary, path)
+        if overwrite:
+            os.replace(temporary, path)
+        else:
+            os.link(temporary, path)
 
 
 def _generate_recording(job, identifier, audio_dir, metadata_dir):
@@ -257,6 +265,10 @@ def _generate_recording(job, identifier, audio_dir, metadata_dir):
                     not os.path.lexists(metadata_dir / f"{identifier}.json")):
                 break
         _write_metadata(metadata_dir / f"{identifier}.json", job)
+    else:
+        metadata_path = metadata_dir / f"{identifier}.json"
+        if _read_recording_metadata(metadata_path).get("language") != job.language:
+            _write_metadata(metadata_path, job, overwrite=True)
     audio_path = audio_dir / f"{identifier}.wav"
     try:
         generate_audio(
